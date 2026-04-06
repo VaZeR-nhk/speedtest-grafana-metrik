@@ -1,5 +1,5 @@
 #!/bin/bash
-# Автоматический установщик Speedtest мониторинга для Node Exporter (FIXED VERSION)
+# Автоматический установщик Speedtest мониторинга (Полная автоматизация)
 
 if [ "$EUID" -ne 0 ]; then 
   echo "Пожалуйста, запустите от root"
@@ -12,9 +12,10 @@ echo "--- Начинаю установку Speedtest Exporter ---"
 curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash
 apt-get install speedtest jq -y
 
-# 2. Исправление ошибки logic_error (чистим битые конфиги)
+# 2. Полная очистка старых конфигов и подготовка окружения
 rm -rf /root/.ookla
-rm -rf ~/.ookla
+mkdir -p /root/.ookla
+export HOME=/root
 
 # 3. Настройка папки для метрик
 mkdir -p /var/lib/node_exporter/textfile_collector
@@ -24,26 +25,26 @@ SERVICE_FILE="/etc/systemd/system/nodeexporter.service"
 if [ -f "$SERVICE_FILE" ]; then
     if ! grep -q "collector.textfile.directory" "$SERVICE_FILE"; then
         echo "Добавляю поддержку textfile в nodeexporter.service..."
+        # Заменяем только если путь еще не добавлен
         sed -i 's|node_exporter|node_exporter --collector.textfile.directory=/var/lib/node_exporter/textfile_collector|' "$SERVICE_FILE"
         systemctl daemon-reload
         systemctl restart nodeexporter
     fi
-else
-    echo "ВНИМАНИЕ: Файл $SERVICE_FILE не найден."
 fi
 
-# 5. Создание скрипта-замерщика (С ИСПРАВЛЕНИЕМ HOME)
+# 5. Создание скрипта-замерщика
 cat << 'EOF' > /usr/local/bin/speedtest_exporter.sh
 #!/bin/bash
+# Путь к файлу метрик
 METRIC_FILE="/var/lib/node_exporter/textfile_collector/speedtest.prom"
 
-# Обязательно для работы Speedtest внутри systemd
+# Принудительно задаем HOME, чтобы speedtest видел лицензию
 export HOME=/root
 
-# Запуск теста
+# Запуск теста с авто-принятием лицензии
 DATA=$(speedtest --format=json --accept-license --accept-gdpr 2>/dev/null)
 
-# Проверяем, что получили корректный JSON с данными загрузки
+# Парсинг данных
 if [[ -n "$DATA" && "$DATA" == *"download"* ]]; then
     DOWNLOAD=$(echo $DATA | jq '.download.bandwidth * 8')
     UPLOAD=$(echo $DATA | jq '.upload.bandwidth * 8')
@@ -65,14 +66,12 @@ speedtest_ping_latency_ms $PING
 speedtest_ping_jitter_ms $JITTER
 EOM
     mv "${METRIC_FILE}.tmp" "${METRIC_FILE}"
-    echo "Speedtest success: $(date)"
-else
-    echo "Speedtest failed. Check manual run of 'speedtest' command."
 fi
 EOF
+
 chmod +x /usr/local/bin/speedtest_exporter.sh
 
-# 6. Создание юнитов системы
+# 6. Создание Service с пробросом HOME
 cat << EOF > /etc/systemd/system/speedtest-run.service
 [Unit]
 Description=Run Speedtest Script
@@ -82,10 +81,11 @@ After=network.target
 Type=oneshot
 ExecStart=/usr/local/bin/speedtest_exporter.sh
 User=root
-# Также прописываем HOME здесь для надежности
+# Передаем HOME сервису, чтобы speedtest не падал
 Environment="HOME=/root"
 EOF
 
+# 7. Создание Timer на 30 минут
 cat << EOF > /etc/systemd/system/speedtest-run.timer
 [Unit]
 Description=Run Speedtest every 30 minutes
@@ -93,22 +93,24 @@ Description=Run Speedtest every 30 minutes
 [Timer]
 OnBootSec=1min
 OnUnitActiveSec=30min
+Persistent=true
 
 [Install]
 WantedBy=timers.target
 EOF
 
-# 7. Запуск и первый замер
+# 8. Запуск системы
 systemctl daemon-reload
 systemctl enable --now speedtest-run.timer
-echo "Запускаю первый тест (подождите 40-60 сек)..."
+
+echo "Запускаю первый замер (это займет около 1 минуты)..."
 systemctl start speedtest-run.service
 
-echo "--- Установка завершена! ---"
-# Проверка результата
+# 9. Финальная проверка результата
+echo "--- Результат установки ---"
 if [ -f "/var/lib/node_exporter/textfile_collector/speedtest.prom" ]; then
-    echo "Метрики успешно созданы:"
+    echo "УСПЕХ! Метрики созданы:"
     cat /var/lib/node_exporter/textfile_collector/speedtest.prom
 else
-    echo "Ошибка: Метрики не были созданы. Попробуйте запустить 'speedtest' вручную."
+    echo "ОШИБКА: Файл метрик не найден. Попробуйте выполнить 'speedtest' вручную."
 fi
