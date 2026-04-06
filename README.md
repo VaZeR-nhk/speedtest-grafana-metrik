@@ -7,4 +7,4 @@
 Запустите следующую команду под пользователем **root**:
 
 ```bash
-curl -sSL https://github.com/VaZeR-nhk/speedtest-grafana-metrik/blob/main/speedtest-install.sh  | bash
+curl -sSL https://raw.githubusercontent.com/VaZeR-nhk/speedtest-grafana-metrik/main/speedtest-install.sh | bash
